@@ -2605,3 +2605,110 @@ QUnit.asyncTest( "Insert script with data-URI (gh-1887)", 1, function( assert ) 
 		QUnit.start();
 	}, 100 );
 } );
+
+QUnit.test( "<option>/<optgroup> HTML isn't parsed inside a <select> wrapper", function( assert ) {
+
+	var div,
+		probe = document.createElement( "div" ),
+		methods = [ "append", "prepend", "before", "after", "replaceWith" ];
+
+	// Support: IE <=9 only
+	// IE <=9 replaces <option> tags with their contents when inserted outside of
+	// the select element, so the <select> wrapper is still required there.
+	probe.innerHTML = "<option></option>";
+	if ( !probe.lastChild ) {
+		assert.expect( 1 );
+		assert.ok( true, "<option> needs a <select> wrapper in this browser" );
+		return;
+	}
+
+	assert.expect( 6 + methods.length * 2 );
+
+	// Inside a <select> wrapper the stray </select> would close the wrapper and
+	// change how the rest of the markup is parsed.
+	div = jQuery( "<option>a</option></select><b>b</b>" );
+	assert.equal( div.length, 2, "jQuery(): the option and its sibling are both created" );
+	assert.equal( div[ 0 ] && div[ 0 ].nodeName.toLowerCase(), "option",
+		"jQuery(): the first node is the option" );
+	assert.equal( div[ 1 ] && div[ 1 ].nodeName.toLowerCase(), "b",
+		"jQuery(): the second node is the sibling" );
+
+	assert.equal( jQuery.parseHTML( "<optgroup label='g'></optgroup></select><b>b</b>" ).length, 2,
+		"jQuery.parseHTML(): the optgroup and its sibling are both created" );
+
+	div = jQuery( "<div></div>" ).html( "<option>a</option></select><b>b</b>" );
+	assert.equal( div.children().length, 2, "html(): the option and its sibling are both created" );
+
+	div = jQuery( "<div></div>" ).append( "<optgroup label='g'></optgroup></select><b>b</b>" );
+	assert.equal( div.children().length, 2,
+		"append(): the optgroup and its sibling are both created" );
+
+	jQuery.each( methods, function( i, method ) {
+		div = jQuery( "<div></div>" );
+		jQuery( "<i></i>" ).appendTo( div )[ method ]( "<option>a</option></select><b>b</b>" );
+		assert.equal( div.find( "option" ).length, 1, method + "(): the option is created" );
+		assert.equal( div.find( "b" ).length, 1, method + "(): the sibling is created" );
+	} );
+} );
+
+QUnit.test( "Sanitized <option>/<optgroup> HTML doesn't get unsanitized by DOM manipulation methods", function( assert ) {
+
+	var container, i, j, payload,
+		executed = {},
+		payloads = [],
+		done = assert.async(),
+		templates = [
+			"<option><style></option></select><img src=url404 onerror=xss(#)></style>",
+			"<optgroup><style></optgroup></select><img src=url404 onerror=xss(#)></style>"
+		],
+		methods = [
+			[ "html", function( html ) {
+				jQuery( "<div></div>" ).appendTo( container ).html( html );
+			} ],
+			[ "append", function( html ) {
+				jQuery( "<div></div>" ).appendTo( container ).append( html );
+			} ],
+			[ "prepend", function( html ) {
+				jQuery( "<div></div>" ).appendTo( container ).prepend( html );
+			} ],
+			[ "before", function( html ) {
+				jQuery( "<div></div>" ).appendTo( container ).before( html );
+			} ],
+			[ "after", function( html ) {
+				jQuery( "<div></div>" ).appendTo( container ).after( html );
+			} ],
+			[ "replaceWith", function( html ) {
+				jQuery( "<div></div>" ).appendTo( container ).replaceWith( html );
+			} ],
+			[ "jQuery", function( html ) {
+				jQuery( html );
+			} ],
+			[ "jQuery.parseHTML", function( html ) {
+				container.append( jQuery.parseHTML( html ) );
+			} ]
+		];
+
+	assert.expect( templates.length * methods.length );
+
+	Globals.register( "xss" );
+	window.xss = function( index ) {
+		executed[ index ] = true;
+	};
+
+	container = jQuery( "<div></div>" ).appendTo( "#qunit-fixture" );
+
+	for ( i = 0; i < templates.length; i++ ) {
+		for ( j = 0; j < methods.length; j++ ) {
+			payload = templates[ i ].replace( "#", payloads.length );
+			payloads.push( methods[ j ][ 0 ] + "( " + payload + " )" );
+			methods[ j ][ 1 ]( payload );
+		}
+	}
+
+	setTimeout( function() {
+		for ( i = 0; i < payloads.length; i++ ) {
+			assert.ok( !executed[ i ], "Insecure code wasn't executed: " + payloads[ i ] );
+		}
+		done();
+	}, 1000 );
+} );
