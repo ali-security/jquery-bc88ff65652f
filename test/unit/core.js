@@ -1230,6 +1230,13 @@ QUnit.test( "jQuery.extend(Object, Object)", function( assert ) {
 	assert.deepEqual( options2, options2Copy, "Check if not modified: options2 must not be modified" );
 } );
 
+QUnit.test( "jQuery.extend( true, ... ) Object.prototype pollution", function( assert ) {
+	assert.expect( 1 );
+
+	jQuery.extend( true, {}, JSON.parse( "{\"__proto__\": {\"devMode\": true}}" ) );
+	assert.ok( !( "devMode" in {} ), "Object.prototype not polluted" );
+} );
+
 QUnit.test( "jQuery.extend(Object, Object {created with \"defineProperties\"})", function( assert ) {
 
 	// Support: IE8 only
