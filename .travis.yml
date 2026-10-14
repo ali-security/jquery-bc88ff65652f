@@ -1,6 +1,131 @@
 language: node_js
-sudo: false
-node_js:
-- "0.12"
-- "4"
-- "5"
+dist: focal
+
+# Every job is spelled out under jobs.include (no top-level node_js matrix).
+#
+# All installs of jquery's devDependencies go through the Seal time machine
+# (registry state as of the 1.12.1 release, 2016-02-22). npm 2 only sends the
+# token when always-auth is on.
+#
+# left-pad@0.0.3 (babel-core 5 -> line-numbers@0.2.0) was unpublished and
+# republished on 2016-03-22, so the time machine does not list it; each job
+# pre-seeds that exact version from the public registry first, and npm then
+# treats the nested dependency as satisfied.
+
+jobs:
+  include:
+    # Upstream suite (`npm test` = `grunt && grunt test`): build, lint,
+    # uglify, dist, node_smoke_tests (jsdom), compare_size.
+    # On Node 0.x jsdom 5.6.1 cannot load and the smoke tests silently drop
+    # out; jsdom@3 (upstream's remedy for old Node) needs contextify, a
+    # native addon, hence python2 for node-gyp.
+    - name: "npm test (Node 0.10, jsdom@3)"
+      node_js: "0.10"
+      addons:
+        apt:
+          packages:
+            - python2
+      install:
+        - npm install left-pad@0.0.3 --registry=https://registry.npmjs.org/
+        - npm config set registry https://time-machines-npm.sealsecurity.io/
+        - npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-02-22T19:08:05.212Z
+        - npm config set always-auth true
+        - npm config set python /usr/bin/python2.7
+        - npm install
+        - npm install jsdom@3
+      script:
+        - npm test
+
+    - name: "npm test (Node 0.12, jsdom@3)"
+      node_js: "0.12"
+      addons:
+        apt:
+          packages:
+            - python2
+      install:
+        - npm install left-pad@0.0.3 --registry=https://registry.npmjs.org/
+        - npm config set registry https://time-machines-npm.sealsecurity.io/
+        - npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-02-22T19:08:05.212Z
+        - npm config set always-auth true
+        - npm config set python /usr/bin/python2.7
+        - npm install
+        - npm install jsdom@3
+      script:
+        - npm test
+
+    - name: "npm test (Node 4)"
+      node_js: "4"
+      install:
+        - npm install left-pad@0.0.3 --registry=https://registry.npmjs.org/
+        - npm config set registry https://time-machines-npm.sealsecurity.io/
+        - npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-02-22T19:08:05.212Z
+        - npm config set always-auth true
+        - npm install
+      script:
+        - npm test
+
+    - name: "npm test (Node 5)"
+      node_js: "5"
+      install:
+        - npm install left-pad@0.0.3 --registry=https://registry.npmjs.org/
+        - npm config set registry https://time-machines-npm.sealsecurity.io/
+        - npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-02-22T19:08:05.212Z
+        - npm config set always-auth true
+        - npm install
+      script:
+        - npm test
+
+    # The real unit suite: browser-only QUnit (test/index.html), which
+    # upstream ran per module on TestSwarm. dist/ is built with the release
+    # toolchain (Node 0.10 / npm 2); the driver runs on Node 20 with
+    # puppeteer-core against Chrome stable; PHP serves the ajax fixtures.
+    - name: "QUnit (headless Chrome)"
+      node_js: "20"
+      addons:
+        chrome: stable
+        apt:
+          packages:
+            - php-cli
+      install:
+        - nvm install 0.10
+        - nvm use 0.10
+        - npm install left-pad@0.0.3 --registry=https://registry.npmjs.org/
+        - npm config set registry https://time-machines-npm.sealsecurity.io/
+        - npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-02-22T19:08:05.212Z
+        - npm config set always-auth true
+        # Quiet install: keeps this job's log small enough for Travis to
+        # retain the QUnit results that follow.
+        - npm install --loglevel=error --progress=false
+      script:
+        - ./node_modules/.bin/grunt
+        - nvm use 20
+        # Public registry with an empty user config: the time-machine
+        # settings above live in ~/.npmrc, and npm 10 rejects always-auth.
+        - mkdir -p /tmp/driver
+        - >-
+          ( cd /tmp/driver && npm init -y &&
+          npm install --loglevel=error --no-progress --userconfig /dev/null --registry=https://registry.npmjs.org/ puppeteer-core@22 )
+        # Several workers: a single-process php -S starves the fixture
+        # iframes the suite opens.
+        - >-
+          PHP_CLI_SERVER_WORKERS=10 /usr/bin/php -S 127.0.0.1:8000 -t . > /tmp/php.log 2>&1 &
+        - >-
+          for i in $(seq 1 30); do
+          curl -sf -o /dev/null http://127.0.0.1:8000/test/index.html && break;
+          sleep 1;
+          done
+        - curl -sf -o /dev/null http://127.0.0.1:8000/test/index.html
+        # One fresh browser per module, as upstream's TestSwarm job ran it
+        # (`index.html?module=<name>`); a single all-modules page lets
+        # basic's offset test leak a fixed <div> into <body> and break
+        # traversing's "body:first div:last" assertion.
+        #
+        # Excluded (browser environment, not jQuery): the #14379 test does a
+        # synchronous XHR from an unload handler; Chrome 80+ disallows sync
+        # XHR during page dismissal, so the request always errors.
+        - >-
+          NODE_PATH=/tmp/driver/node_modules
+          CHROME_PATH="$(command -v google-chrome)"
+          SEAL_MODULES="ready,basic,core,callbacks,deferred,deprecated,support,data,queue,attributes,event,selector,traversing,manipulation,wrap,css,serialize,ajax,effects,offset,dimensions"
+          SEAL_SKIP_TESTS="ajax: #14379 - jQuery.ajax() on unload"
+          node .github/seal-browser-runner.js "http://127.0.0.1:8000/test/index.html?dev"

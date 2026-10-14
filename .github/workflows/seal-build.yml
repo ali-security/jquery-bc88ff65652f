@@ -1,0 +1,117 @@
+name: seal-build
+
+# Build-and-pack only. The unit suite (QUnit in headless Chrome) and the
+# per-Node `npm test` legs run on Travis (.travis.yml).
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The npm tarball is not `npm pack` of this repo: jQuery's release
+      # (build/release/dist.js) copies the grunt-built dist files plus src,
+      # LICENSE.txt, AUTHORS.txt and package.json into the jquery-dist repo
+      # and publishes from there. 514cf3e4 is the parent of jquery-dist's
+      # 1.12.1 release commit (the master state the release copied onto).
+      - name: Fetch jquery-dist (release staging repo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-checkout https://github.com/jquery/jquery-dist.git "$RUNNER_TEMP/jqdist"
+          git -C "$RUNNER_TEMP/jqdist" checkout -q 514cf3e46b06f7e5dc8186f7cf23170451001603
+          git -C "$RUNNER_TEMP/jqdist" log -1 --format='%H %s'
+
+      - name: Write container script
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seal"
+          cat > "$RUNNER_TEMP/seal/build.sh" <<'SEAL_BUILD_EOF'
+          set -euo pipefail
+          node --version
+          npm --version
+          # left-pad@0.0.3 (babel-core 5 -> line-numbers@0.2.0) was unpublished
+          # and republished on 2016-03-22, so the time machine (cutoff
+          # 2016-02-22) does not list it. Pre-seed that exact version from the
+          # public registry; npm 2 then treats the nested dep as satisfied.
+          npm install left-pad@0.0.3 --registry=https://registry.npmjs.org/
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken 2016-02-22T19:08:05.212Z
+          # npm 2 only sends the token when always-auth is on
+          npm config set always-auth true
+          # build.js appends the commit id to the version when COMMIT is set
+          unset COMMIT
+
+          # Reproducible header: build.js stamps @DATE with the current time.
+          # Pin it to the release's value (reference dist/jquery.js header:
+          # "Date: 2016-02-22T19:07Z"). Build-time only, not a source edit.
+          sed -i 's|( new Date() )\.toISOString()\.replace( /:\\d+\\\.\\d+Z\$/, "Z" )|"2016-02-22T19:07Z"|' build/tasks/build.js
+          if ! grep -q '/@DATE/g, "2016-02-22T19:07Z" )' build/tasks/build.js; then
+            echo "ERROR: @DATE pin was not applied to build/tasks/build.js"
+            exit 1
+          fi
+
+          npm install
+          # grunt default = build, lint (jsonlint/jshint/jscs), uglify, dist,
+          # test_fast, compare_size
+          ./node_modules/.bin/grunt
+          ls -la dist
+          head -n 15 dist/jquery.js
+
+          # Assemble the published package exactly as build/release/dist.js does
+          STAGE=/seal/stage
+          rm -rf "$STAGE"
+          cp -a /jqdist "$STAGE"
+          rm -rf "$STAGE/.git"
+          mkdir -p "$STAGE/dist"
+          cp -f dist/jquery.js dist/jquery.min.js dist/jquery.min.map "$STAGE/dist/"
+          cp -rf src LICENSE.txt AUTHORS.txt package.json "$STAGE/"
+          node -e '
+            var fs = require("fs");
+            var pkg = require("/work/package.json");
+            fs.writeFileSync("/seal/stage/bower.json", JSON.stringify({
+              name: pkg.name,
+              main: pkg.main,
+              license: "MIT",
+              ignore: [ "package.json" ],
+              keywords: pkg.keywords
+            }, null, 2));
+          '
+          # npm 2 records file uid/gid in the tar entries
+          chown -R "$HOST_UID:$HOST_GID" "$STAGE"
+          cd "$STAGE"
+          npm pack
+          mkdir -p /work/seal-out
+          mv jquery-1.12.1.tgz /work/seal-out/jquery-1.12.1.tgz
+          cd /work
+          tar tvzf seal-out/jquery-1.12.1.tgz
+          echo "member count: $(tar tzf seal-out/jquery-1.12.1.tgz | wc -l)"
+          chown -R "$HOST_UID:$HOST_GID" /work
+          SEAL_BUILD_EOF
+          chmod +x "$RUNNER_TEMP/seal/build.sh"
+
+      - name: Build and pack (node 0.10 / npm 2, grunt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$RUNNER_TEMP/seal:/seal" \
+            -v "$RUNNER_TEMP/jqdist:/jqdist:ro" \
+            -w /work \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            node:0.10-wheezy bash /seal/build.sh
+          test -f seal-out/jquery-1.12.1.tgz
+          ls -la seal-out
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jquery-1.12.1.tgz
+          path: seal-out/jquery-1.12.1.tgz
+          if-no-files-found: error
