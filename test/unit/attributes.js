@@ -1536,3 +1536,34 @@ QUnit.test( "SVG class manipulation (gh-2199)", function( assert ) {
 		assert.ok( !elem.hasClass( "awesome" ), "SVG element (" + this + ") toggles the class off" );
 	} );
 } );
+
+QUnit.test( "non-lowercase boolean attribute getters should not crash (CVE-2016-10707)", function( assert ) {
+	assert.expect( 9 );
+
+	var elem = jQuery( "<input disabled required autofocus type='checkbox'>" ).appendTo( "#qunit-fixture" );
+
+	jQuery.each( {
+		disabled: "DisAbled",
+		required: "requiRed",
+		autofocus: "AUTOFOCUS"
+	}, function( lowercased, original ) {
+		try {
+			assert.strictEqual( elem.attr( original ), lowercased,
+				"The '" + original + "' attr() getter returns the lowercased name" );
+		} catch ( e ) {
+			assert.ok( false, "The '" + original + "' attr() getter threw: " + e );
+		}
+		try {
+			assert.strictEqual( jQuery.find.attr( elem[ 0 ], original ), lowercased,
+				"The '" + original + "' Sizzle attribute getter returns the lowercased name" );
+		} catch ( e ) {
+			assert.ok( false, "The '" + original + "' Sizzle attribute getter threw: " + e );
+		}
+		try {
+			assert.strictEqual( elem.filter( "[" + original + "]" ).length, 1,
+				"The '" + original + "' attribute selector matches" );
+		} catch ( e ) {
+			assert.ok( false, "The '" + original + "' attribute selector threw: " + e );
+		}
+	} );
+} );
